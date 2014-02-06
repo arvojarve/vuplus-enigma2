@@ -2537,7 +2537,10 @@ void eDVBServicePlay::updateDecoder(bool sendSeekableStateChanged)
 						if (type == 0) // dvb
 							m_subtitle_parser->start(pid, comp_page, anc_page);
 						else if (type == 1) // ttx
-							m_teletext_parser->setPageAndMagazine(comp_page, anc_page);
+						{
+							char* lang = PyString_AsString(PyTuple_GET_ITEM(subs, 4));
+							m_teletext_parser->setPageAndMagazine(comp_page, anc_page, lang);
+						}
 					}
 					Py_DECREF(subs);
 				}
@@ -2799,8 +2802,9 @@ RESULT eDVBServicePlay::enableSubtitles(eWidget *parent, ePyObject tuple)
 
 	if (type == 1)  // teletext subtitles
 	{
-		int page, magazine, pid;
-		if (tuplesize < 4)
+		int page, magazine, pid, ii;
+		char* lang;
+		if (tuplesize < 5)
 			goto error_out;
 
 		if (!m_teletext_parser)
@@ -2824,11 +2828,22 @@ RESULT eDVBServicePlay::enableSubtitles(eWidget *parent, ePyObject tuple)
 			goto error_out;
 		magazine = PyInt_AsLong(entry);
 
+		entry = PyTuple_GET_ITEM(tuple, 4);
+		if (!PyString_Check(entry))
+			goto error_out;
+		lang = PyString_AsString(entry);
+
 		m_subtitle_widget = new eSubtitleWidget(parent);
 		m_subtitle_widget->resize(parent->size()); /* full size */
-		m_teletext_parser->setPageAndMagazine(page, magazine);
+		m_teletext_parser->setPageAndMagazine(page, magazine, lang);
 		if (m_dvb_service)
-			m_dvb_service->setCacheEntry(eDVBService::cSUBTITLE,((pid&0xFFFF)<<16)|((page&0xFF)<<8)|(magazine&0xFF));
+		{
+			for (ii=0; ii < m_teletext_parser->max_id; ii++){
+				if (!memcmp(m_teletext_parser->my_country_codes[ii], lang, 3)) break;
+			}
+			if (ii > m_teletext_parser->max_id-2) ii = 0;
+			m_dvb_service->setCacheEntry(eDVBService::cSUBTITLE,((pid&0xFFFF)<<16)|((page&0xFF)<<8)|((ii&0x1F)<<3)|(magazine&0x7));
+		}
 	}
 	else if (type == 0)
 	{
@@ -2883,7 +2898,7 @@ RESULT eDVBServicePlay::disableSubtitles(eWidget *parent)
 	}
 	if (m_teletext_parser)
 	{
-		m_teletext_parser->setPageAndMagazine(-1, -1);
+		m_teletext_parser->setPageAndMagazine(-1, -1, "und");
 		m_subtitle_pages.clear();
 	}
 	if (m_dvb_service)
@@ -2900,19 +2915,29 @@ PyObject *eDVBServicePlay::getCachedSubtitle()
 		{
 			unsigned int data = (unsigned int)tmp;
 			int pid = (data&0xFFFF0000)>>16;
-			ePyObject tuple = PyTuple_New(4);
 			eDVBServicePMTHandler::program program;
 			eDVBServicePMTHandler &h = m_timeshift_active ? m_service_handler_timeshift : m_service_handler;
 			if (!h.getProgramInfo(program))
 			{
 				if (program.textPid==pid) // teletext
+				{
+					ePyObject tuple = PyTuple_New(5);
 					PyTuple_SET_ITEM(tuple, 0, PyInt_FromLong(1)); // type teletext
+				        PyTuple_SET_ITEM(tuple, 1, PyInt_FromLong(pid)); // pid
+				        PyTuple_SET_ITEM(tuple, 2, PyInt_FromLong((data&0xFF00)>>8)); // page
+				        PyTuple_SET_ITEM(tuple, 3, PyInt_FromLong(data&0x7)); // magazine
+				        PyTuple_SET_ITEM(tuple, 4, PyString_FromString(m_teletext_parser->my_country_codes[(data >> 3) & 0x1f])); // lang
+				        return tuple;
+				}
 				else
+				{
+					ePyObject tuple = PyTuple_New(4);
 					PyTuple_SET_ITEM(tuple, 0, PyInt_FromLong(0)); // type dvb
-				PyTuple_SET_ITEM(tuple, 1, PyInt_FromLong(pid)); // pid
-				PyTuple_SET_ITEM(tuple, 2, PyInt_FromLong((data&0xFF00)>>8)); // composition_page / page
-				PyTuple_SET_ITEM(tuple, 3, PyInt_FromLong(data&0xFF)); // ancillary_page / magazine
-				return tuple;
+				        PyTuple_SET_ITEM(tuple, 1, PyInt_FromLong(pid)); // pid
+				        PyTuple_SET_ITEM(tuple, 2, PyInt_FromLong((data&0xFF00)>>8)); // composition_page
+				        PyTuple_SET_ITEM(tuple, 3, PyInt_FromLong(data&0xFF)); // ancillary_page
+				        return tuple;
+				}
 			}
 		}
 	}
